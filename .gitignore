@@ -1,0 +1,18 @@
+# Local checkouts, report worktrees, and loop runtime state.
+/repo/
+/z3test/
+/pages/
+/state/
+/logs/
+/work/
+
+# Local agent settings and credentials.
+/.claude/
+/.env
+/.env.*
+
+# Generated files.
+*.log
+__pycache__/
+*.py[cod]
+.DS_Store
