@@ -20,8 +20,13 @@ verification in the fork `levnach/z3`, one pull request per iteration.
 5. **Integrator agent** judges both the change and the review, fixes what the
    review found, re-verifies, and writes `PR_TITLE.txt` and `PR_BODY.md`
    (or `ABORT.md`).
-6. **Driver** pushes the branch and opens the PR on the fork. Only the driver
-   pushes, opens, edits, merges, or comments.
+6. **Driver and report.** Prepare an HTML copy of the PR description before
+   creating a draft. Once GitHub assigns its number, the reporter writes the
+   high-level report. Publish `reports/pr-N.html` on `gh-pages`, wait until
+   the exact HTML is live, and add its links to the PR description before
+   marking the draft ready. Publication failure leaves the draft for
+   `--resume`. Open reports must not claim a merge or completed CI.
+   Only the driver pushes, opens, edits, merges, or comments.
 7. **Gate.** If every changed file matches `LOCAL_GATE_PATHS` (documentation,
    the Python examples, the Lean project), the driver runs the local gate
    instead of GitHub CI: the Python example tests, the z3test proof script
@@ -34,16 +39,20 @@ verification in the fork `levnach/z3`, one pull request per iteration.
    stops). At most `MAX_CI_FIX_ATTEMPTS` rounds.
 8. **Merge.** Squash merge into the fork's `master`; the push triggers the
    master CI as well.
-9. **Report.** The `reporter` agent writes a self-contained high-level HTML
-   page; the driver publishes it on the `gh-pages` branch (GitHub Pages at
-   `https://levnach.github.io/z3/reports/pr-N.html`, index at `/`), and
-   comments the link on the PR.
+9. **Refresh report.** Update the same HTML page after merge with the actual
+   merge and verification results. Reports live at
+   `https://levnach.github.io/z3/reports/pr-N.html`, with an index at `/`.
+   Corresponding upstream reports use `reports/upstream/pr-N.html`.
 
 ## Running
 
     ./loop.sh -n 2            # two iterations (two PRs)
     ./loop.sh --start 5 -n 1  # explicit iteration number
     ./loop.sh --skip-build    # reuse the existing build
+    ./run_until_cpp.sh        # stop at a ready C++ PR, without merging it
+    ./loop.sh --start 5 --resume --stop-on-cpp  # retry publication, reusing a draft
+
+Loop helper tests: `python3 -m unittest discover -s tests`.
 
 Logs: `logs/loop.log` (everything), `state/iter-NNN/iteration.log`
 (per iteration), `state/iter-NNN/<role>.stream.log` (agent transcripts).
@@ -65,7 +74,8 @@ Results: `state/HISTORY.md`, `state/BACKLOG.md`, `state/iter-NNN/*`.
     lib.sh       helpers (agents, rebase, build, CI wait, pages)
     prompts/     one prompt per role: implementer, reviewer, integrator,
                  ci_fixer, reporter, rebaser
-    tools/       render_prompt.py, ci_status.py, make_index.py, fallback_report.py
+    tools/       prompt rendering, CI status, report rendering/linking, site index
+    tests/       report rendering and draft-publication flow regressions
     repo/        clone of the fork (origin) with upstream push-disabled
     z3test/      shallow clone of Z3Prover/z3test
     pages/       worktree of the gh-pages branch

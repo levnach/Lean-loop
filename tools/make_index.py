@@ -7,7 +7,7 @@ import sys
 
 pages = sys.argv[1]
 metas = []
-for path in glob.glob(os.path.join(pages, "reports", "*.json")):
+for path in glob.glob(os.path.join(pages, "reports", "**", "*.json"), recursive=True):
     try:
         with open(path, encoding="utf-8") as fh:
             metas.append(json.load(fh))
@@ -18,17 +18,20 @@ metas.sort(key=lambda m: -int(m.get("number", 0) or 0))
 rows = []
 for m in metas:
     n = html.escape(str(m.get("number", "")))
+    page = html.escape(str(m.get("page") or f"reports/pr-{n}.html"), quote=True)
+    state = html.escape(str(m.get("state", "MERGED")))
     rows.append(
         "<tr>"
-        f'<td><a href="reports/pr-{n}.html">#{n}</a></td>'
+        f'<td><a href="{page}">#{n}</a></td>'
         f'<td>{html.escape(str(m.get("title", "")))}</td>'
         f'<td>{html.escape(str(m.get("date", ""))[:10])}</td>'
+        f'<td>{state}</td>'
         f'<td>{html.escape(str(m.get("summary", "")))}</td>'
         f'<td><a href="{html.escape(str(m.get("pr_url", "")))}">PR</a></td>'
         "</tr>"
     )
 if not rows:
-    rows.append('<tr><td colspan="5">No reports yet.</td></tr>')
+    rows.append('<tr><td colspan="6">No reports yet.</td></tr>')
 
 doc = f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
@@ -47,8 +50,8 @@ th {{ font-weight: 600; color: var(--muted); font-size: .9rem; }}
 a {{ color: var(--link); text-decoration: none; }} a:hover {{ text-decoration: underline; }}
 </style></head><body><main>
 <h1>Z3 &rarr; Lean certificate improvement loop</h1>
-<p class="lead">High-level reports for pull requests merged into the fork by the automated implement / review / integrate loop.</p>
-<table><thead><tr><th>PR</th><th>Title</th><th>Merged</th><th>Summary</th><th></th></tr></thead>
+<p class="lead">High-level reports for open and merged pull requests from the automated implement / review / integrate loop.</p>
+<table><thead><tr><th>PR</th><th>Title</th><th>Date</th><th>Status</th><th>Summary</th><th></th></tr></thead>
 <tbody>{''.join(rows)}</tbody></table>
 </main></body></html>
 """

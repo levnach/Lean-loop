@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run loop iterations one at a time until a merged iteration changes C++ code (src/**),
+# Run loop iterations one at a time until a ready PR changes C++ code,
 # then stop so that an upstream pull request can be opened. Also stops on a failed iteration
 # or after MAX iterations (safety cap).
 set -euo pipefail
@@ -14,8 +14,12 @@ for (( i = 1; i <= MAX; i++ )); do
     git -C "$LOOP_DIR/repo" fetch -q origin master
     before=$(git -C "$LOOP_DIR/repo" rev-parse origin/master)
     say "run $i/$MAX: fork master $before"
-    if ! "$LOOP_DIR/loop.sh" -n 1 >> "$LOOP_DIR/logs/run_until_cpp.loop.out" 2>&1; then
+    if ! "$LOOP_DIR/loop.sh" -n 1 --stop-on-cpp >> "$LOOP_DIR/logs/run_until_cpp.loop.out" 2>&1; then
         say "STOP: iteration failed (see logs/loop.log)"; exit 1
+    fi
+    if [[ -s "$LOOP_DIR/state/CPP_STOP_SHA" && "$(cat "$LOOP_DIR/state/CPP_STOP_SHA")" == "$(git -C "$LOOP_DIR/repo" rev-parse HEAD)" ]]; then
+        say "STOP: C++ PR and its HTML report are ready; the PR was not merged"
+        exit 0
     fi
     git -C "$LOOP_DIR/repo" fetch -q origin master
     after=$(git -C "$LOOP_DIR/repo" rev-parse origin/master)

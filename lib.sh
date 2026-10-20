@@ -13,6 +13,7 @@ die() { log "FATAL: $*"; exit 1; }
 
 # gh against the fork, run outside the clone so that gh never touches local branches.
 ghf() { (cd "$LOOP_DIR" && gh -R "$FORK" "$@"); }
+ghp() { (cd "$LOOP_DIR" && gh -R "${PR_REPO:-$FORK}" "$@"); }
 
 repo_git() { git -C "$REPO_DIR" "$@"; }
 
@@ -26,6 +27,7 @@ render_prompt() {  # role, destination
 # Writes ITER_DIR/ROLE.stream.log (events), ROLE.json (final result), ROLE.result.md.
 run_agent() {
     local role="$1"
+    [[ "$role" != reporter ]] || report_context
     local prompt="$ITER_DIR/$role.prompt.md"
     local stream="$ITER_DIR/$role.stream.log"
     local result="$ITER_DIR/$role.json"
@@ -48,6 +50,74 @@ run_agent() {
         log "agent[$role]: done rc=$rc in $(( (SECONDS - start) / 60 ))m, no result event (see $ITER_DIR/$role.stderr.log)"
     fi
     return $rc
+}
+
+report_context() {
+    PR_REPO="${PR_REPO:-$FORK}"
+    PR_STATE="OPEN"
+    [[ -z "${MERGE_SHA:-}" ]] || PR_STATE="MERGED"
+    [[ "${PR_NUMBER:-0}" != 0 ]] || PR_STATE="PREPARING"
+    CHANGE_SHA="${MERGE_SHA:-$(repo_git rev-parse HEAD)}"
+    PR_DATE="${MERGE_DATE:-}"
+    if [[ -z "$PR_DATE" && -s "$ITER_DIR/pr.json" ]]; then
+        PR_DATE=$(jq -r '.createdAt // ""' "$ITER_DIR/pr.json") || return 1
+    fi
+    export PR_REPO PR_STATE CHANGE_SHA PR_DATE
+}
+
+valid_report() {
+    [[ -s "$ITER_DIR/report.html" && -s "$ITER_DIR/report-meta.json" ]] &&
+        jq -e --argjson number "$PR_NUMBER" --arg state "$PR_STATE" --arg sha "$CHANGE_SHA" \
+            '.number == $number and .state == $state and .head_sha == $sha' \
+            "$ITER_DIR/report-meta.json" >/dev/null 2>&1
+}
+
+generate_report() {
+    report_context || return 1
+    local before; before=$(repo_git rev-parse HEAD) || return 1
+    run_agent reporter || log "reporter exited with an error; checking its output"
+    if [[ "$(repo_git rev-parse HEAD)" != "$before" || -n "$(repo_git status --porcelain)" ]]; then
+        log "reporter modified the repository; stopping without discarding its changes"
+        return 1
+    fi
+    if ! valid_report; then
+        log "reporter produced no current report; rendering the HTML PR description"
+        python3 "$LOOP_DIR/tools/fallback_report.py" "$ITER_DIR" || return 1
+    fi
+    valid_report
+}
+
+open_pr_with_report() {
+    PR_REPO="${1:-$FORK}"
+    local head="${2:-$BRANCH}" existing
+    PR_NUMBER=0 PR_URL="" REPORT_URL="" MERGE_SHA="" MERGE_DATE=""
+    export PR_REPO PR_NUMBER PR_URL REPORT_URL MERGE_SHA MERGE_DATE PR_TITLE
+    report_context || return 1
+    existing=$(ghp pr list --head "${head#*:}" --author "${FORK%%/*}" --state open \
+        --json number --jq '.[0].number // empty') || return 1
+    if [[ -n "$existing" ]]; then
+        PR_NUMBER="$existing"
+    else
+        python3 "$LOOP_DIR/tools/fallback_report.py" "$ITER_DIR" || return 1
+        PR_URL=$(ghp pr create --draft --base "$BASE_BRANCH" --head "$head" \
+            --title "$PR_TITLE" --body-file "$ITER_DIR/PR_BODY.md") || return 1
+        PR_NUMBER=${PR_URL##*/}
+    fi
+    [[ "$PR_NUMBER" =~ ^[0-9]+$ ]] || return 1
+    ghp pr view "$PR_NUMBER" --json number,url,title,headRefOid,createdAt,state,isDraft > "$ITER_DIR/pr.json" || return 1
+    PR_URL=$(jq -r .url "$ITER_DIR/pr.json") || return 1
+    local path="reports/pr-$PR_NUMBER.html"
+    [[ "$PR_REPO" == "$FORK" ]] || path="reports/upstream/pr-$PR_NUMBER.html"
+    REPORT_URL="$PAGES_URL/$path"
+    export PR_URL PR_NUMBER REPORT_URL
+    log "preparing HTML report for draft PR $PR_REPO#$PR_NUMBER"
+    generate_report || return 1
+    publish_report "$PR_NUMBER" || return 1
+    if jq -e '.isDraft' "$ITER_DIR/pr.json" >/dev/null; then
+        ghp pr ready "$PR_NUMBER" >/dev/null || return 1
+    fi
+    ghp pr view "$PR_NUMBER" --json number,url,title,headRefOid,createdAt,state,isDraft > "$ITER_DIR/pr.json" || return 1
+    log "opened PR with HTML report: $PR_URL ($REPORT_URL)"
 }
 
 # Commit anything an agent left uncommitted so that the branch carries the complete change.
@@ -207,24 +277,30 @@ ensure_pages() {
     fi
 }
 
-# publish_report PR: copies ITER_DIR/report.html to the pages branch, rebuilds the index, pushes, comments.
+# A PR must keep its numbered report and description link before becoming ready.
 publish_report() {
-    local pr="$1"
-    mkdir -p "$PAGES_DIR/reports"
-    cp "$ITER_DIR/report.html" "$PAGES_DIR/reports/pr-$pr.html"
-    cp "$ITER_DIR/report-meta.json" "$PAGES_DIR/reports/pr-$pr.json"
-    python3 "$LOOP_DIR/tools/make_index.py" "$PAGES_DIR"
-    git -C "$PAGES_DIR" add -A
-    git -C "$PAGES_DIR" commit -q -m "Report for PR #$pr" || true
-    git -C "$PAGES_DIR" push -q origin "$PAGES_BRANCH" || die "pushing the report to $PAGES_BRANCH failed"
+    local pr="$1" path="reports/pr-$1" source
+    local trailers=()
+    [[ -z "${LOOP_COMMIT_TRAILERS:-}" ]] || trailers=(-m "$LOOP_COMMIT_TRAILERS")
+    [[ "${PR_REPO:-$FORK}" == "$FORK" ]] || path="reports/upstream/pr-$pr"
+    source="https://github.com/$FORK/blob/$PAGES_BRANCH/$path.html"
+    mkdir -p "$PAGES_DIR/$(dirname "$path")" || return 1
+    cp "$ITER_DIR/report.html" "$PAGES_DIR/$path.html" || return 1
+    cp "$ITER_DIR/report-meta.json" "$PAGES_DIR/$path.json" || return 1
+    python3 "$LOOP_DIR/tools/make_index.py" "$PAGES_DIR" || return 1
+    git -C "$PAGES_DIR" add index.html "$path.html" "$path.json" || return 1
+    if ! git -C "$PAGES_DIR" diff --cached --quiet; then
+        git -C "$PAGES_DIR" commit -q -m "Report for ${PR_REPO:-$FORK}#$pr" "${trailers[@]}" || return 1
+    fi
+    git -C "$PAGES_DIR" push -q origin "$PAGES_BRANCH" || return 1
     local code="" i
     # Legacy Pages builds of this fork queue for up to 10 minutes and build for 5 to 15 more.
     # Request a new build only when the latest one actually failed: requesting one while a
     # build is in progress cancels it, and doing that every few minutes keeps the page down.
     local status
     for i in $(seq 1 100); do
-        code=$(curl -s -o /dev/null -w '%{http_code}' "$REPORT_URL" || true)
-        [[ "$code" == "200" ]] && break
+        code=$(curl -sS -o "$ITER_DIR/published-report.html" -w '%{http_code}' "$REPORT_URL") || code="000"
+        [[ "$code" == "200" ]] && cmp -s "$ITER_DIR/report.html" "$ITER_DIR/published-report.html" && break
         if (( i % 20 == 0 )); then
             status=$(gh api "repos/$FORK/pages/builds/latest" --jq .status 2>/dev/null || true)
             [[ "$status" == "errored" ]] && gh api -X POST "repos/$FORK/pages/builds" >/dev/null 2>&1
@@ -232,6 +308,12 @@ publish_report() {
         sleep 15
     done
     log "report page $REPORT_URL (HTTP $code)"
-    ghf pr comment "$pr" --body "$(printf '## High-level report\n\n%s\n\nSource: https://github.com/%s/blob/%s/reports/pr-%s.html (index: %s/)\n' \
-        "$REPORT_URL" "$FORK" "$PAGES_BRANCH" "$pr" "$PAGES_URL")" >/dev/null
+    if [[ "$code" != "200" ]] || ! cmp -s "$ITER_DIR/report.html" "$ITER_DIR/published-report.html"; then
+        log "report publication timed out; the PR will not be marked ready"
+        return 1
+    fi
+    python3 "$LOOP_DIR/tools/report_body.py" "$ITER_DIR/PR_BODY.md" "$REPORT_URL" "$source" || return 1
+    ghp pr edit "$pr" --body-file "$ITER_DIR/PR_BODY.md" >/dev/null || return 1
+    ghp pr comment "$pr" --body "$(printf '## High-level report\n\n%s\n\nSource: %s (index: %s/)\n' \
+        "$REPORT_URL" "$source" "$PAGES_URL")" >/dev/null
 }

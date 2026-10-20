@@ -1,36 +1,56 @@
-"""Minimal HTML report built from PR_BODY.md when the reporter agent produced no page."""
+"""Render an HTML copy of a proposed, open, or merged PR description."""
 import html
 import json
 import os
 import sys
+from pathlib import Path
 
-iter_dir = sys.argv[1]
-env = os.environ
-body = ""
-title = env.get("PR_TITLE", "")
-for name in ("PR_BODY.md",):
-    p = os.path.join(iter_dir, name)
-    if os.path.exists(p):
-        with open(p, encoding="utf-8") as fh:
-            body = fh.read()
-doc = f"""<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>{html.escape(title)}</title>
-<style>body{{font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;max-width:50rem;margin:2rem auto;padding:0 1rem;line-height:1.5}}pre{{white-space:pre-wrap}}</style>
+
+def generate_report(iter_dir, env):
+    iter_dir = Path(iter_dir)
+    body = (iter_dir / "PR_BODY.md").read_text(encoding="utf-8")
+    title = env["PR_TITLE"]
+    number = int(env.get("PR_NUMBER", "0") or 0)
+    merge_sha = env.get("MERGE_SHA", "")
+    state = env.get("PR_STATE") or ("MERGED" if merge_sha else "OPEN" if number else "PREPARING")
+    repository = env.get("PR_REPO") or env.get("FORK", "")
+    date = env.get("MERGE_DATE", "") if state == "MERGED" else env.get("PR_DATE", "")
+    if state == "MERGED" and not merge_sha:
+        raise ValueError("a merged report requires a merge commit")
+    if number:
+        status = f'Pull request <a href="{html.escape(env["PR_URL"], quote=True)}">#{number}</a>'
+    else:
+        status = "Proposed pull request"
+    if state == "MERGED":
+        status += (
+            f', merged as <a href="https://github.com/{html.escape(repository)}/commit/{html.escape(merge_sha)}">'
+            f'<code>{html.escape(merge_sha[:12])}</code></a> on {html.escape(date)}.'
+        )
+    else:
+        status += ". Not merged. CI results are not inferred from local verification."
+    doc = f"""<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>{html.escape(title)}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>:root{{color-scheme:light dark}}body{{font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;max-width:50rem;margin:2rem auto;padding:0 1rem;line-height:1.5}}pre{{white-space:pre-wrap;overflow-wrap:anywhere}}</style>
 </head><body><h1>{html.escape(title)}</h1>
-<p>Pull request <a href="{html.escape(env.get('PR_URL',''))}">#{html.escape(env.get('PR_NUMBER',''))}</a>, merged as
-<a href="https://github.com/{html.escape(env.get('FORK',''))}/commit/{html.escape(env.get('MERGE_SHA',''))}"><code>{html.escape(env.get('MERGE_SHA','')[:12])}</code></a> on {html.escape(env.get('MERGE_DATE',''))}.</p>
-<p><em>The reporter agent did not produce a page; this is the pull request description verbatim.</em></p>
+<p>{status}</p>
+<p><em>This is an HTML copy of the pull request description. See the PR for the latest check status.</em></p>
 <pre>{html.escape(body)}</pre></body></html>"""
-with open(os.path.join(iter_dir, "report.html"), "w", encoding="utf-8") as fh:
-    fh.write(doc)
-meta = {
-    "number": int(env.get("PR_NUMBER", "0") or 0),
-    "title": title,
-    "pr_url": env.get("PR_URL", ""),
-    "page": env.get("REPORT_URL", ""),
-    "merge_sha": env.get("MERGE_SHA", ""),
-    "date": env.get("MERGE_DATE", ""),
-    "iteration": int(env.get("ITER", "0") or 0),
-    "summary": "Fallback report generated from the pull request description.",
-}
-with open(os.path.join(iter_dir, "report-meta.json"), "w", encoding="utf-8") as fh:
-    json.dump(meta, fh, indent=2)
+    (iter_dir / "report.html").write_text(doc, encoding="utf-8")
+    meta = {
+        "number": number,
+        "title": title,
+        "pr_url": env.get("PR_URL", ""),
+        "page": env.get("REPORT_URL", ""),
+        "merge_sha": merge_sha,
+        "date": date,
+        "iteration": int(env.get("ITER", "0") or 0),
+        "summary": "HTML description of the pull request.",
+        "state": state,
+        "head_sha": env.get("CHANGE_SHA", ""),
+        "repository": repository,
+    }
+    (iter_dir / "report-meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+
+
+if __name__ == "__main__":
+    generate_report(sys.argv[1], os.environ)

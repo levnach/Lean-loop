@@ -2,9 +2,8 @@
 # Lean certificate improvement loop.
 #
 # Each iteration: rebase the fork's master onto upstream master -> build -> implementer agent
-# -> reviewer agent -> integrator agent -> pull request on the fork -> wait for CI (with CI-fixer
-# rounds) -> squash-merge into the fork's master -> reporter agent -> publish HTML report on
-# GitHub Pages and link it from the PR.
+# -> reviewer agent -> integrator agent -> draft PR -> publish and link its HTML report
+# -> ready PR -> wait for CI -> squash-merge -> refresh the report.
 set -euo pipefail
 
 LOOP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -26,15 +25,18 @@ ITERATIONS=1
 START=""
 SKIP_BUILD=0
 RESUME=0
+STOP_ON_CPP=0
+STOP_REACHED=0
 while (( $# )); do
     case "$1" in
         -n|--iterations) ITERATIONS="$2"; shift 2 ;;
         --start) START="$2"; shift 2 ;;
         --skip-build) SKIP_BUILD=1; shift ;;
         --resume) RESUME=1; shift ;;   # first iteration: branch and PR text already exist; start at the push
+        --stop-on-cpp) STOP_ON_CPP=1; shift ;;
         -h|--help)
             sed -n '2,8p' "$0"; echo
-            echo "usage: $0 [-n ITERATIONS] [--start K] [--skip-build] [--resume]"; exit 0 ;;
+            echo "usage: $0 [-n ITERATIONS] [--start K] [--skip-build] [--resume] [--stop-on-cpp]"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -135,12 +137,15 @@ run_iteration() {
     done
     [[ "$(repo_git rev-parse HEAD)" == "$(repo_git ls-remote origin "refs/heads/$BRANCH" | cut -f1)" ]] \
         || { fail_iteration "could not push $BRANCH to the fork"; return 1; }
-    PR_URL=$(ghf pr create --base "$BASE_BRANCH" --head "$BRANCH" --title "$PR_TITLE" --body-file "$ITER_DIR/PR_BODY.md") || PR_URL=""
-    PR_NUMBER=${PR_URL##*/}
-    [[ "$PR_NUMBER" =~ ^[0-9]+$ ]] || { fail_iteration "could not open the PR for $BRANCH (branch pushed, left for a human)"; return 1; }
-    export PR_URL PR_NUMBER PR_TITLE
-    ghf pr view "$PR_NUMBER" --json number,url,title,headRefOid,createdAt > "$ITER_DIR/pr.json"
-    log "opened PR #$PR_NUMBER: $PR_URL"
+    open_pr_with_report || { fail_iteration "could not publish PR and HTML report for $BRANCH; any draft is left for retry with --resume"; return 1; }
+    if (( STOP_ON_CPP )) && repo_git diff --name-only "$(repo_git merge-base "origin/$BASE_BRANCH" HEAD)" HEAD \
+        | grep -Eq '\.(cpp|cc|cxx|h|hpp|c)$'; then
+        repo_git rev-parse HEAD > "$STATE_DIR/CPP_STOP_SHA"
+        printf '| %s | %s | [#%s](%s) %s | not merged | stopped at C++ PR | %s |\n' \
+            "$ITER" "$(date '+%Y-%m-%d %H:%M')" "$PR_NUMBER" "$PR_URL" "$PR_TITLE" "$REPORT_URL" >> "$STATE_DIR/HISTORY.md"
+        STOP_REACHED=1
+        return 0
+    fi
 
     # 5. Gate: the local gate for documentation/Python/Lean-only changes, otherwise GitHub CI
     # with bounded fix rounds.
@@ -169,7 +174,11 @@ run_iteration() {
         commit_leftovers ci_fixer
         outcome=$(grep -m1 '^OUTCOME:' "$ITER_DIR/CI_FIX_$attempt.md" 2>/dev/null | awk '{print $2}' || true)
         log "CI fix attempt $attempt: ${outcome:-no outcome recorded}"
-        ghf pr edit "$PR_NUMBER" --body-file "$ITER_DIR/PR_BODY.md" >/dev/null || true
+        python3 "$LOOP_DIR/tools/report_body.py" "$ITER_DIR/PR_BODY.md" "$REPORT_URL" \
+            "https://github.com/$FORK/blob/$PAGES_BRANCH/reports/pr-$PR_NUMBER.html" \
+            || { fail_iteration "could not retain the HTML report link after CI fix $attempt"; return 1; }
+        ghf pr edit "$PR_NUMBER" --body-file "$ITER_DIR/PR_BODY.md" >/dev/null \
+            || { fail_iteration "could not update the PR description after CI fix $attempt"; return 1; }
         case "$outcome" in
             FIXED) repo_git push -q origin "$BRANCH" --force-with-lease ;;
             UNRELATED) unrelated=1; break ;;
@@ -196,13 +205,8 @@ run_iteration() {
     # 7. Report page.
     REPORT_URL="$PAGES_URL/reports/pr-$PR_NUMBER.html"
     export REPORT_URL
-    run_agent reporter || log "reporter exited with an error"
-    repo_git reset -q --hard "origin/$BASE_BRANCH"
-    if [[ ! -s "$ITER_DIR/report.html" || ! -s "$ITER_DIR/report-meta.json" ]] || ! jq -e . "$ITER_DIR/report-meta.json" >/dev/null 2>&1; then
-        log "warning: reporter produced no valid page; using the fallback report"
-        python3 "$LOOP_DIR/tools/fallback_report.py" "$ITER_DIR"
-    fi
-    publish_report "$PR_NUMBER"
+    generate_report || { fail_iteration "could not refresh the merged PR report"; return 1; }
+    publish_report "$PR_NUMBER" || { fail_iteration "could not publish the merged PR report"; return 1; }
 
     printf '| %s | %s | [#%s](%s) %s | %s | %s | %s |\n' \
         "$ITER" "$(date '+%Y-%m-%d %H:%M')" "$PR_NUMBER" "$PR_URL" "$PR_TITLE" "$MERGE_SHA" \
@@ -223,6 +227,10 @@ main() {
     local i
     for (( i = START; i < START + ITERATIONS; i++ )); do
         run_iteration "$i" || die "stopping after a failed iteration $i"
+        if (( STOP_REACHED )); then
+            log "stopped at C++ PR $PR_URL with HTML report $REPORT_URL"
+            return 0
+        fi
     done
     log "all $ITERATIONS iteration(s) completed; history in $STATE_DIR/HISTORY.md"
 }
