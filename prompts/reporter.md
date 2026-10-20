@@ -3,7 +3,7 @@ You are the reporter in an automated improvement loop for Z3's native proof cert
 ## Inputs (read all of them)
 - {{ITER_DIR}}/PR_TITLE.txt, PR_BODY.md, CHANGE_SUMMARY.md, REVIEW.md, any CI_FIX_*.md, the CI status files {{ITER_DIR}}/ci-*.json if any (check names, states, links), and {{ITER_DIR}}/pr.json.
 - {{ITER_DIR}}/LOCAL_GATE.md, if it exists: report its actual results, without claiming the PR has merged when its state is OPEN. If it does not exist yet, the local gate has not been recorded. CI checks may still be pending; do not infer their success from the local tests.
-- The change, from the repository {{REPO_DIR}} (your working directory): `git show --stat {{CHANGE_SHA}}`, and `git show {{CHANGE_SHA}}` for details.
+- The complete PR change, from the repository {{REPO_DIR}} (your working directory): `git diff --stat {{CHANGE_BASE_SHA}} {{CHANGE_SHA}}`, and `git diff {{CHANGE_BASE_SHA}} {{CHANGE_SHA}}` for details. An open PR can contain several commits; do not describe only the last commit.
 - Context on the overall effort: doc/lean-proof-plan.md in {{REPO_DIR}} (Goal and boundary, Milestones).
 
 ## Output
@@ -39,13 +39,13 @@ Work in {{ITER_DIR}}/scratch/report/ (create it). The z3 binary is at {{BUILD_DI
   `python3 examples/python/proof_certificate.py {{ITER_DIR}}/scratch/report/example.smt2 > {{ITER_DIR}}/scratch/report/example.json`, then
   `python3 examples/python/proof_to_lean.py {{ITER_DIR}}/scratch/report/example.smt2 {{ITER_DIR}}/scratch/report/example.json -o {{ITER_DIR}}/scratch/report/example.lean`, then
   `./scripts/check_lean.sh {{ITER_DIR}}/scratch/report/example.lean` to confirm Lean accepts it. Quote from example.lean.
-- "Before" (the parent of the change commit): extract the pre-change scripts without touching the checkout:
-  `mkdir -p {{ITER_DIR}}/scratch/report/old && for f in $(git ls-tree --name-only {{CHANGE_SHA}}^ examples/python/ | grep -E 'proof.*\.py$'); do git show {{CHANGE_SHA}}^:$f > {{ITER_DIR}}/scratch/report/old/$(basename $f); done`,
+- "Before" (the PR's base before any of its commits): extract the pre-change scripts without touching the checkout:
+  `mkdir -p {{ITER_DIR}}/scratch/report/old && for f in $(git ls-tree --name-only {{CHANGE_BASE_SHA}} examples/python/ | grep -E 'proof.*\.py$'); do git show {{CHANGE_BASE_SHA}}:$f > {{ITER_DIR}}/scratch/report/old/$(basename $f); done`,
   then run `python3 {{ITER_DIR}}/scratch/report/old/proof_certificate.py {{ITER_DIR}}/scratch/report/example.smt2` and, if that succeeds, the old proof_to_lean.py the same way. Quote the first error line or rejection message. If the old code accepted the input, pick a different input.
 - If any step cannot be run, say so in the section and quote the PR's test instead of inventing output.
 - For a native C++ checker fix that does not change Lean reconstruction, use the real native hint, regression, and before/after checker output instead of inventing a newly certified Lean example.
 
 Also write {{ITER_DIR}}/report-meta.json exactly in this shape:
-{"number": {{PR_NUMBER}}, "title": "<PR title>", "pr_url": "{{PR_URL}}", "page": "{{REPORT_URL}}", "merge_sha": "{{MERGE_SHA}}", "date": "{{PR_DATE}}", "iteration": {{ITER}}, "summary": "<one or two sentences>", "state": "{{PR_STATE}}", "head_sha": "{{CHANGE_SHA}}", "repository": "{{PR_REPO}}"}
+{"number": {{PR_NUMBER}}, "title": "<PR title>", "pr_url": "{{PR_URL}}", "page": "{{REPORT_URL}}", "merge_sha": "{{MERGE_SHA}}", "date": "{{PR_DATE}}", "iteration": {{ITER}}, "summary": "<one or two sentences>", "state": "{{PR_STATE}}", "head_sha": "{{CHANGE_SHA}}", "base_sha": "{{CHANGE_BASE_SHA}}", "repository": "{{PR_REPO}}"}
 
 Do not modify the repository. Final message: one line.

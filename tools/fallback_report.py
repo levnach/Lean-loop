@@ -47,6 +47,7 @@ def generate_report(iter_dir, env):
         "summary": "HTML description of the pull request.",
         "state": state,
         "head_sha": env.get("CHANGE_SHA", ""),
+        "base_sha": env.get("CHANGE_BASE_SHA", ""),
         "repository": repository,
     }
     (iter_dir / "report-meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")

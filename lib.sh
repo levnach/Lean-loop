@@ -58,17 +58,26 @@ report_context() {
     [[ -z "${MERGE_SHA:-}" ]] || PR_STATE="MERGED"
     [[ "${PR_NUMBER:-0}" != 0 ]] || PR_STATE="PREPARING"
     CHANGE_SHA="${MERGE_SHA:-$(repo_git rev-parse HEAD)}"
+    if [[ "$PR_STATE" == MERGED ]]; then
+        CHANGE_BASE_SHA=$(repo_git rev-parse "$CHANGE_SHA^") || return 1
+    else
+        local remote=origin
+        [[ "$PR_REPO" == "$FORK" ]] || remote=upstream
+        CHANGE_BASE_SHA=$(repo_git merge-base "$remote/$BASE_BRANCH" "$CHANGE_SHA") || return 1
+    fi
     PR_DATE="${MERGE_DATE:-}"
     if [[ -z "$PR_DATE" && -s "$ITER_DIR/pr.json" ]]; then
         PR_DATE=$(jq -r '.createdAt // ""' "$ITER_DIR/pr.json") || return 1
     fi
-    export PR_REPO PR_STATE CHANGE_SHA PR_DATE
+    export PR_REPO PR_STATE CHANGE_SHA CHANGE_BASE_SHA PR_DATE
 }
 
 valid_report() {
     [[ -s "$ITER_DIR/report.html" && -s "$ITER_DIR/report-meta.json" ]] &&
         jq -e --argjson number "$PR_NUMBER" --arg state "$PR_STATE" --arg sha "$CHANGE_SHA" \
-            '.number == $number and .state == $state and .head_sha == $sha' \
+            --arg base "$CHANGE_BASE_SHA" --arg repo "$PR_REPO" --arg page "$REPORT_URL" \
+            '.number == $number and .state == $state and .head_sha == $sha and
+             .base_sha == $base and .repository == $repo and .page == $page' \
             "$ITER_DIR/report-meta.json" >/dev/null 2>&1
 }
 

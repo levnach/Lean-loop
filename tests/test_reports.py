@@ -97,6 +97,7 @@ log() { :; }
 repo_git() {
     case "$1" in
         rev-parse) printf 'abc\n' ;;
+        merge-base) printf 'base\n' ;;
         status) : ;;
         *) return 1 ;;
     esac
@@ -140,6 +141,7 @@ open_pr_with_report "$TARGET" "$HEAD" || exit 1
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(trace, ["create", "publish", "ready"])
         self.assertEqual((meta["number"], meta["state"]), (23, "OPEN"))
+        self.assertEqual(meta["base_sha"], "base")
 
     def test_publication_failure_leaves_the_pr_as_draft(self):
         result, trace, _ = self.run_flow(fail_publication=True)
