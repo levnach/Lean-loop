@@ -8,7 +8,7 @@ You are the reporter in an automated improvement loop for Z3's native proof cert
 
 ## Output
 Write {{ITER_DIR}}/report.html: one self-contained HTML file (inline CSS, no JavaScript needed, no external assets or fonts) that reads well in light and dark system themes (`prefers-color-scheme`). Content:
-1. Header: PR title, link to the PR, state {{PR_STATE}}, date {{PR_DATE}}, and loop iteration {{ITER}}. For OPEN, explicitly say it is not merged and link to the change commit at https://github.com/{{PR_REPO}}/commit/{{CHANGE_SHA}}. Only for MERGED include the merge commit and merge date {{MERGE_DATE}}.
+1. Header: PR title, link to the PR, state {{PR_STATE}}, date {{PR_DATE}}, and loop iteration {{ITER}}. For OPEN, explicitly say it is not merged and link to the change commit at https://github.com/{{PR_REPO}}/commit/{{CHANGE_SHA}}. Do not label it a draft: the report is published before the driver marks the PR ready and must remain accurate afterward. Only for MERGED include the merge commit and merge date {{MERGE_DATE}}.
 2. "In one paragraph": what changed and why it matters for certifying Z3 unsat results in Lean. Use the standard terms without defining them here; each term is a link to its Glossary entry.
 3. "Background": one short paragraph on what the pipeline could and could not handle before this PR, and the milestone it serves. No term definitions here either, only links to the Glossary. Do not describe what Z3 does, what Lean is, or the purpose of the project.
 4. "What changed": grouped by component, in plain language, plus a small table of touched files with line counts.
