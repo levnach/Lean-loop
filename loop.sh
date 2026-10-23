@@ -86,7 +86,10 @@ run_iteration() {
     BASE_SHA=$(repo_git rev-parse HEAD)
     PREVIOUS_SUMMARIES=$(ls "$STATE_DIR"/iter-*/CHANGE_SUMMARY.md 2>/dev/null | grep -v "/$ITER_ID/" | tr '\n' ' ' || true)
     PREVIOUS_SUMMARIES=${PREVIOUS_SUMMARIES:-"(none; this is the first iteration)"}
+    # An interrupted attempt (for example after a reboot) can leave a hand-written
+    # ITER_DIR/RESUME_NOTE.md pointing the implementer at its saved patch and transcript.
     RETRY_NOTE=""
+    [[ -s "$ITER_DIR/RESUME_NOTE.md" ]] && RETRY_NOTE=$(cat "$ITER_DIR/RESUME_NOTE.md") && log "implementer gets $ITER_DIR/RESUME_NOTE.md"
     export BASE_SHA PREVIOUS_SUMMARIES RETRY_NOTE
 
     # 1. Implement.
@@ -223,6 +226,10 @@ main() {
         local last
         last=$(ls -d "$STATE_DIR"/iter-* 2>/dev/null | sed 's/.*iter-0*//' | sort -n | tail -n 1 || true)
         START=$(( ${last:-0} + 1 ))
+        # An iteration whose implementer never finished (interrupted, or failed) keeps its number.
+        if [[ -n "$last" && ! -s "$(printf '%s/iter-%03d' "$STATE_DIR" "$last")/CHANGE_SUMMARY.md" ]]; then
+            START=$last
+        fi
     fi
     local i
     for (( i = START; i < START + ITERATIONS; i++ )); do

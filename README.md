@@ -54,6 +54,11 @@ verification in the fork `levnach/z3`, one pull request per iteration.
 
 Loop helper tests: `python3 -m unittest discover -s tests`.
 
+An interrupted iteration (reboot, kill) can be continued: save the clone's
+diff as a patch under `state/iter-NNN/`, write `state/iter-NNN/RESUME_NOTE.md`
+describing it, and start the loop at that iteration; the note is rendered
+into the implementer prompt.
+
 Logs: `logs/loop.log` (everything), `state/iter-NNN/iteration.log`
 (per iteration), `state/iter-NNN/<role>.stream.log` (agent transcripts).
 Results: `state/HISTORY.md`, `state/BACKLOG.md`, `state/iter-NNN/*`.
