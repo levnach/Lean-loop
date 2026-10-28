@@ -5,6 +5,7 @@
 /state/
 /logs/
 /work/
+/pages.lock/
 
 # Local agent settings and credentials.
 /.claude/

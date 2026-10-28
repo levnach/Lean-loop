@@ -22,16 +22,19 @@ verification in the fork `levnach/z3`, one pull request per iteration.
    (or `ABORT.md`).
 6. **Driver and report.** Prepare an HTML copy of the PR description before
    creating a draft. Once GitHub assigns its number, the reporter writes the
-   high-level report. Publish `reports/pr-N.html` on `gh-pages`, wait until
-   the exact HTML is live, and add its links to the PR description before
-   marking the draft ready. Publication failure leaves the draft for
-   `--resume`. Open reports must not claim a merge or completed CI.
-   Only the driver pushes, opens, edits, merges, or comments.
+   high-level report while the gate (step 7) already runs. Publish
+   `reports/pr-N.html` on `gh-pages`, wait until the exact HTML is live, and
+   add its links to the PR description before marking the draft ready.
+   Publication failure leaves the draft for `--resume`. Open reports must not
+   claim a merge or completed CI. Only the driver pushes, opens, edits,
+   merges, or comments. Commits to `gh-pages` take the `pages.lock` directory
+   lock, since a background report refresh (step 9) may share the worktree.
 7. **Gate.** If every changed file matches `LOCAL_GATE_PATHS` (documentation,
    the Python examples, the Lean project), the driver runs the local gate
    instead of GitHub CI: the Python example tests, the z3test proof script
    tests, and the Lean-certified Boolean and QF_LRA matrices, on this machine
-   (`state/iter-NNN/LOCAL_GATE.md`, also posted as a PR comment). Otherwise
+   (`state/iter-NNN/LOCAL_GATE.md`, also posted as a PR comment). It runs in
+   the background while the reporter works; the merge waits for both. Otherwise
    the driver waits for the gating workflows (CI, Windows, OCaml,
    WebAssembly, determinism). On failure the `ci_fixer` agent gets the failed
    logs and either fixes (push, wait again), proves the failure unrelated with
@@ -40,7 +43,13 @@ verification in the fork `levnach/z3`, one pull request per iteration.
 8. **Merge.** Squash merge into the fork's `master`; the push triggers the
    master CI as well.
 9. **Refresh report.** Update the same HTML page after merge with the actual
-   merge and verification results. Reports live at
+   merge and verification results. This runs in the background so that the
+   next iteration starts right after the merge: the reporter works in a
+   detached worktree of the merge commit under `work/report-pr-N` with a
+   copy-on-write clone of the build directory, and logs to the iteration log.
+   A failed refresh leaves the pre-merge page in place and writes
+   `state/iter-NNN/REPORT_REFRESH_FAILED.md`; `report-refresh.pid` names the
+   job while it runs. Reports live at
    `https://levnach.github.io/z3/reports/pr-N.html`, with an index at `/`.
    Corresponding upstream reports use `reports/upstream/pr-N.html`.
 

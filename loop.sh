@@ -3,7 +3,8 @@
 #
 # Each iteration: rebase the fork's master onto upstream master -> build -> implementer agent
 # -> reviewer agent -> integrator agent -> draft PR -> publish and link its HTML report
-# -> ready PR -> wait for CI -> squash-merge -> refresh the report.
+# -> draft PR -> HTML report alongside the gate (local gate, or GitHub CI) -> ready PR
+# -> squash-merge -> refresh the report in the background while the next iteration starts.
 set -euo pipefail
 
 LOOP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -18,7 +19,8 @@ PAGES_DIR="$LOOP_DIR/pages"
 STATE_DIR="$LOOP_DIR/state"
 BUILD_DIR="$REPO_DIR/build"
 AGENT_ALLOWED_TOOLS+=",Bash($BUILD_DIR/z3:*),Bash($BUILD_DIR/test-z3:*),Bash($REPO_DIR/scripts/check_lean.sh:*)"
-export LOOP_DIR REPO_DIR Z3TEST_DIR PAGES_DIR STATE_DIR BUILD_DIR BUILD_JOBS FORK UPSTREAM BASE_BRANCH MAX_CI_FIX_ATTEMPTS
+export LOOP_DIR REPO_DIR Z3TEST_DIR PAGES_DIR STATE_DIR BUILD_DIR BUILD_JOBS FORK UPSTREAM BASE_BRANCH MAX_CI_FIX_ATTEMPTS \
+       LEAN_MEM_LIMIT_MB LEAN_TOTAL_MEM_LIMIT_MB LEAN_TIME_LIMIT_MIN
 mkdir -p "$STATE_DIR" "$LOOP_DIR/logs"
 
 ITERATIONS=1
@@ -140,9 +142,10 @@ run_iteration() {
     done
     [[ "$(repo_git rev-parse HEAD)" == "$(repo_git ls-remote origin "refs/heads/$BRANCH" | cut -f1)" ]] \
         || { fail_iteration "could not push $BRANCH to the fork"; return 1; }
-    open_pr_with_report || { fail_iteration "could not publish PR and HTML report for $BRANCH; any draft is left for retry with --resume"; return 1; }
+    open_draft_pr || { fail_iteration "could not open a draft PR for $BRANCH"; return 1; }
     if (( STOP_ON_CPP )) && repo_git diff --name-only "$(repo_git merge-base "origin/$BASE_BRANCH" HEAD)" HEAD \
         | grep -Eq '\.(cpp|cc|cxx|h|hpp|c)$'; then
+        finish_pr_with_report || { fail_iteration "could not publish PR and HTML report for $BRANCH; any draft is left for retry with --resume"; return 1; }
         repo_git rev-parse HEAD > "$STATE_DIR/CPP_STOP_SHA"
         printf '| %s | %s | [#%s](%s) %s | not merged | stopped at C++ PR | %s |\n' \
             "$ITER" "$(date '+%Y-%m-%d %H:%M')" "$PR_NUMBER" "$PR_URL" "$PR_TITLE" "$REPORT_URL" >> "$STATE_DIR/HISTORY.md"
@@ -150,13 +153,23 @@ run_iteration() {
         return 0
     fi
 
-    # 5. Gate: the local gate for documentation/Python/Lean-only changes, otherwise GitHub CI
-    # with bounded fix rounds.
-    local attempt=0 unrelated=0 rc outcome gate="github"
+    # 5. Gate, alongside the HTML report. The local gate (documentation/Python/Lean-only changes)
+    # and the reporter both only read the checkout and write under ITER_DIR, so they run at the
+    # same time; GitHub CI already runs on the draft while the reporter works. The PR becomes
+    # ready once its report is published, and the merge waits for the gate.
+    local attempt=0 unrelated=0 rc outcome gate="github" gate_pid="" gate_rc=0
     if local_gate_applies; then
         gate="local"
-        log "change touches only local-gate paths; running the local gate instead of waiting for GitHub CI"
-        if ! run_local_gate; then
+        log "change touches only local-gate paths; running the local gate alongside the HTML report instead of waiting for GitHub CI"
+        ( run_local_gate ) & gate_pid=$!
+    fi
+    if ! finish_pr_with_report; then
+        [[ -z "$gate_pid" ]] || wait "$gate_pid" || true
+        fail_iteration "could not publish PR and HTML report for $BRANCH; any draft is left for retry with --resume"; return 1
+    fi
+    if [[ "$gate" == local ]]; then
+        wait "$gate_pid" || gate_rc=$?
+        if (( gate_rc != 0 )); then
             ghf pr comment "$PR_NUMBER" --body-file "$ITER_DIR/LOCAL_GATE.md" >/dev/null || true
             fail_iteration "local gate failed for PR #$PR_NUMBER (see $ITER_DIR/local-gate.log); PR left open"; return 1
         fi
@@ -205,20 +218,21 @@ run_iteration() {
     repo_git reset -q --hard "origin/$BASE_BRANCH"
     log "merged PR #$PR_NUMBER as $MERGE_SHA"
 
-    # 7. Report page.
+    # 7. Report page: refreshed in the background (worktree of the merge commit, cloned build)
+    # while the next iteration starts. The background job logs the final "iteration done" line.
     REPORT_URL="$PAGES_URL/reports/pr-$PR_NUMBER.html"
     export REPORT_URL
-    generate_report || { fail_iteration "could not refresh the merged PR report"; return 1; }
-    publish_report "$PR_NUMBER" || { fail_iteration "could not publish the merged PR report"; return 1; }
-
     printf '| %s | %s | [#%s](%s) %s | %s | %s | %s |\n' \
         "$ITER" "$(date '+%Y-%m-%d %H:%M')" "$PR_NUMBER" "$PR_URL" "$PR_TITLE" "$MERGE_SHA" \
         "$([[ $gate == local ]] && echo "local gate" || echo "fix rounds: $attempt")" "$REPORT_URL" >> "$STATE_DIR/HISTORY.md"
-    log "=== iteration $ITER done: PR #$PR_NUMBER merged, report $REPORT_URL ==="
+    refresh_merged_report_async
+    log "=== iteration $ITER merged PR #$PR_NUMBER; the report at $REPORT_URL is being refreshed in the background ==="
 }
 
 main() {
     preflight
+    start_lean_watchdog
+    trap stop_lean_watchdog EXIT
     ITER_DIR="$STATE_DIR/setup"; mkdir -p "$ITER_DIR"; ITER_LOG="$ITER_DIR/setup.log"
     ensure_pages
     [[ -f "$STATE_DIR/HISTORY.md" ]] || printf '# Loop history\n\n| iteration | finished | PR | merge | CI | report |\n| --- | --- | --- | --- | --- | --- |\n' > "$STATE_DIR/HISTORY.md"

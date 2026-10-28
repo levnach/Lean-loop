@@ -79,12 +79,13 @@ class ReportTests(unittest.TestCase):
 
 
 class OpeningFlowTests(unittest.TestCase):
-    def run_flow(self, *, fail_publication=False, existing=False, upstream=False):
+    def run_flow(self, *, fail_publication=False, existing=False, upstream=False, split=False):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)
             (path / "PR_BODY.md").write_text("## Summary\n\nChange description.", encoding="utf-8")
             env = dict(os.environ, LOOP_DIR=str(ROOT), ITER_DIR=directory,
                        FAIL_PUBLICATION=str(int(fail_publication)), EXISTING=str(int(existing)),
+                       SPLIT=str(int(split)),
                        TARGET="owner/upstream" if upstream else "owner/fork",
                        HEAD="owner:loop/iter-23" if upstream else "loop/iter-23")
             result = subprocess.run(["bash", "-c", r'''
@@ -130,7 +131,13 @@ publish_report() {
        "$REPORT_URL" == "https://pages/reports/upstream/pr-23.html" ]]
     [[ "$FAIL_PUBLICATION" == 0 ]]
 }
-open_pr_with_report "$TARGET" "$HEAD" || exit 1
+if [[ "$SPLIT" == 1 ]]; then
+    open_draft_pr "$TARGET" "$HEAD" || exit 1
+    printf 'gate\n' >> "$ITER_DIR/trace"
+    finish_pr_with_report || exit 1
+else
+    open_pr_with_report "$TARGET" "$HEAD" || exit 1
+fi
 '''], env=env, capture_output=True, text=True)
             trace = (path / "trace").read_text().splitlines()
             meta = json.loads((path / "report-meta.json").read_text())
@@ -142,6 +149,12 @@ open_pr_with_report "$TARGET" "$HEAD" || exit 1
         self.assertEqual(trace, ["create", "publish", "ready"])
         self.assertEqual((meta["number"], meta["state"]), (23, "OPEN"))
         self.assertEqual(meta["base_sha"], "base")
+
+    def test_gate_can_run_between_the_draft_and_its_report(self):
+        result, trace, meta = self.run_flow(split=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(trace, ["create", "gate", "publish", "ready"])
+        self.assertEqual((meta["number"], meta["state"]), (23, "OPEN"))
 
     def test_publication_failure_leaves_the_pr_as_draft(self):
         result, trace, _ = self.run_flow(fail_publication=True)
@@ -158,6 +171,29 @@ open_pr_with_report "$TARGET" "$HEAD" || exit 1
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(trace, ["create", "publish", "ready"])
         self.assertEqual(meta["page"], "https://pages/reports/upstream/pr-23.html")
+
+
+class PagesLockTests(unittest.TestCase):
+    def test_lock_is_exclusive_and_reclaims_a_dead_owner(self):
+        with tempfile.TemporaryDirectory() as directory:
+            env = dict(os.environ, LOOP_DIR=str(ROOT), WORK=directory)
+            result = subprocess.run(["bash", "-c", r'''
+set -euo pipefail
+source "$LOOP_DIR/lib.sh"
+PAGES_DIR="$WORK/pages"
+log() { printf '%s\n' "$*" >> "$WORK/log"; }
+sleep() { :; }
+pages_lock || exit 1
+[[ -d "$PAGES_DIR.lock" && "$(cat "$PAGES_DIR.lock/pid")" == "$BASHPID" ]] || exit 2
+if PAGES_LOCK_TIMEOUT_MIN=0 pages_lock; then exit 3; fi   # held by a live process: give up
+pages_unlock
+[[ ! -e "$PAGES_DIR.lock" ]] || exit 4
+mkdir "$PAGES_DIR.lock" && printf '4000000\n' > "$PAGES_DIR.lock/pid"   # no such process
+pages_lock || exit 5
+grep -q 'finished process 4000000' "$WORK/log" || exit 6
+pages_unlock
+'''], env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
 
 
 class PublicationTests(unittest.TestCase):

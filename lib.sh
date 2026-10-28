@@ -39,7 +39,7 @@ run_agent() {
     log "agent[$role]: start (events: $stream)"
     local start=$SECONDS rc=0
     (cd "$REPO_DIR" && env -u CLAUDECODE \
-        PYTHONPATH="$BUILD_DIR/python" Z3_EXE="$BUILD_DIR/z3" Z3_SOURCE="$REPO_DIR" GIT_EDITOR=true \
+        PYTHONPATH="$BUILD_DIR/python" Z3_LIBRARY_PATH="$BUILD_DIR" Z3_EXE="$BUILD_DIR/z3" Z3_SOURCE="$REPO_DIR" GIT_EDITOR=true \
         timeout -k 60 "$((AGENT_TIMEOUT_MIN * 60))" \
         "$CLAUDE_BIN" "${args[@]}" < "$prompt" > "$stream" 2> "$ITER_DIR/$role.stderr.log") || rc=$?
     jq -c 'select(.type == "result")' "$stream" 2>/dev/null | tail -n 1 > "$result" || true
@@ -96,7 +96,10 @@ generate_report() {
     valid_report
 }
 
-open_pr_with_report() {
+# open_draft_pr [PR_REPO] [HEAD]: create the draft PR (or find the existing one) and set
+# PR_NUMBER, PR_URL, and REPORT_URL. finish_pr_with_report then writes and publishes the HTML
+# report and marks the PR ready; between the two, the driver may run the local gate.
+open_draft_pr() {
     PR_REPO="${1:-$FORK}"
     local head="${2:-$BRANCH}" existing
     PR_NUMBER=0 PR_URL="" REPORT_URL="" MERGE_SHA="" MERGE_DATE=""
@@ -119,6 +122,9 @@ open_pr_with_report() {
     [[ "$PR_REPO" == "$FORK" ]] || path="reports/upstream/pr-$PR_NUMBER.html"
     REPORT_URL="$PAGES_URL/$path"
     export PR_URL PR_NUMBER REPORT_URL
+}
+
+finish_pr_with_report() {
     log "preparing HTML report for draft PR $PR_REPO#$PR_NUMBER"
     generate_report || return 1
     publish_report "$PR_NUMBER" || return 1
@@ -127,6 +133,53 @@ open_pr_with_report() {
     fi
     ghp pr view "$PR_NUMBER" --json number,url,title,headRefOid,createdAt,state,isDraft > "$ITER_DIR/pr.json" || return 1
     log "opened PR with HTML report: $PR_URL ($REPORT_URL)"
+}
+
+open_pr_with_report() { open_draft_pr "$@" && finish_pr_with_report; }
+
+# refresh_merged_report_async: regenerate and republish the merged PR's report in the background
+# so that the next iteration starts right after the merge instead of after the reporter and the
+# GitHub Pages build (8 to 17 minutes on recent iterations). The reporter must see the merge
+# commit and a z3 build the next iteration cannot rebuild under it: it gets a detached worktree
+# under work/ and a copy-on-write clone of the build directory (instant on APFS). Progress goes to
+# the iteration log. A failure leaves the pre-merge report page in place and is recorded in
+# ITER_DIR/REPORT_REFRESH_FAILED.md; it does not fail the iteration, which has already merged.
+refresh_merged_report_async() {
+    local main_repo="$REPO_DIR" wt="$LOOP_DIR/work/report-pr-$PR_NUMBER"
+    local note="$ITER_DIR/REPORT_REFRESH_FAILED.md" out="$ITER_DIR/report-refresh.log"
+    rm -f "$note"
+    (
+        trap - EXIT
+        set +e
+        git -C "$main_repo" worktree remove --force "$wt" >/dev/null 2>&1; rm -rf "$wt"
+        if ! git -C "$main_repo" worktree add -q --detach "$wt" "$MERGE_SHA" >> "$out" 2>&1; then
+            log "report refresh for PR #$PR_NUMBER FAILED: could not create worktree $wt (see $out)"
+            printf 'Could not create the worktree %s for the post-merge report; see report-refresh.log.\n' "$wt" > "$note"
+            exit 1
+        fi
+        if ! { cp -Rc "$BUILD_DIR" "$wt/build" 2>/dev/null || cp -R "$BUILD_DIR" "$wt/build"; }; then
+            log "report refresh for PR #$PR_NUMBER FAILED: could not copy the build into $wt"
+            printf 'Could not copy the z3 build into %s for the post-merge report.\n' "$wt" > "$note"
+            git -C "$main_repo" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt"
+            exit 1
+        fi
+        REPO_DIR="$wt" BUILD_DIR="$wt/build"
+        AGENT_ALLOWED_TOOLS+=",Bash($BUILD_DIR/z3:*),Bash($BUILD_DIR/test-z3:*),Bash($REPO_DIR/scripts/check_lean.sh:*)"
+        export REPO_DIR BUILD_DIR
+        (cd "$wt" && ./scripts/check_lean.sh >> "$out" 2>&1) \
+            || log "report refresh for PR #$PR_NUMBER: Lean project build failed in $wt (see $out); continuing"
+        if generate_report && publish_report "$PR_NUMBER"; then
+            log "=== iteration $ITER done: PR #$PR_NUMBER merged, report $REPORT_URL ==="
+        else
+            log "report refresh for PR #$PR_NUMBER FAILED; the pre-merge report page stays at $REPORT_URL (see $out and reporter.stderr.log)"
+            printf 'The post-merge report refresh failed; the published page still describes the open PR. See report-refresh.log and reporter.*.log.\n' > "$note"
+        fi
+        git -C "$main_repo" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt"
+        rm -f "$ITER_DIR/report-refresh.pid"
+    ) >> "$out" 2>&1 &
+    REPORT_REFRESH_PID=$!
+    printf '%s\n' "$REPORT_REFRESH_PID" > "$ITER_DIR/report-refresh.pid"
+    log "report refresh for merged PR #$PR_NUMBER runs in the background (pid $REPORT_REFRESH_PID, worktree $wt)"
 }
 
 # Commit anything an agent left uncommitted so that the branch carries the complete change.
@@ -190,7 +243,7 @@ local_gate_applies() {
 _gate_step() {
     local name="$1" start=$SECONDS; shift
     printf '\n===== %s\n$ %s\n' "$name" "$*" >> "$GATE_LOG"
-    if (cd "$REPO_DIR" && PYTHONPATH="$BUILD_DIR/python" Z3_EXE="$BUILD_DIR/z3" Z3_SOURCE="$REPO_DIR" \
+    if (cd "$REPO_DIR" && PYTHONPATH="$BUILD_DIR/python" Z3_LIBRARY_PATH="$BUILD_DIR" Z3_EXE="$BUILD_DIR/z3" Z3_SOURCE="$REPO_DIR" \
             timeout "$((LOCAL_GATE_TIMEOUT_MIN * 60))" "$@" >> "$GATE_LOG" 2>&1); then
         GATE_ROWS+="| $name | pass | $(( SECONDS - start ))s |"$'\n'
     else
@@ -278,7 +331,10 @@ ensure_pages() {
         repo_git fetch -q origin "$PAGES_BRANCH:$PAGES_BRANCH" 2>/dev/null || true
         repo_git worktree add -q "$PAGES_DIR" "$PAGES_BRANCH"
     fi
-    git -C "$PAGES_DIR" pull -q --ff-only origin "$PAGES_BRANCH" 2>/dev/null || true
+    if pages_lock; then
+        git -C "$PAGES_DIR" pull -q --ff-only origin "$PAGES_BRANCH" 2>/dev/null || true
+        pages_unlock
+    fi
     if ! gh api "repos/$FORK/pages" >/dev/null 2>&1; then
         log "enabling GitHub Pages on $FORK from $PAGES_BRANCH"
         gh api -X POST "repos/$FORK/pages" -f build_type=legacy -f "source[branch]=$PAGES_BRANCH" -f "source[path]=/" >/dev/null \
@@ -286,22 +342,52 @@ ensure_pages() {
     fi
 }
 
-# A PR must keep its numbered report and description link before becoming ready.
-publish_report() {
-    local pr="$1" path="reports/pr-$1" source
-    local trailers=()
-    [[ -z "${LOOP_COMMIT_TRAILERS:-}" ]] || trailers=(-m "$LOOP_COMMIT_TRAILERS")
-    [[ "${PR_REPO:-$FORK}" == "$FORK" ]] || path="reports/upstream/pr-$pr"
-    source="https://github.com/$FORK/blob/$PAGES_BRANCH/$path.html"
+# The pages worktree is shared by this process and by background report refreshes, possibly
+# started by an earlier loop.sh process; every commit and push on it runs under this lock.
+# A directory lock works without flock(1), which macOS lacks; the owner's pid detects stale locks.
+pages_lock() {
+    local lock="${PAGES_DIR}.lock" start=$SECONDS owner
+    while ! mkdir "$lock" 2>/dev/null; do
+        owner=$(cat "$lock/pid" 2>/dev/null || true)
+        if [[ -n "$owner" ]] && ! kill -0 "$owner" 2>/dev/null; then
+            log "pages lock held by finished process $owner; removing it"
+            rm -rf "$lock"; continue
+        fi
+        if (( SECONDS - start >= ${PAGES_LOCK_TIMEOUT_MIN:-30} * 60 )); then
+            log "pages lock still held by process ${owner:-?} after ${PAGES_LOCK_TIMEOUT_MIN:-30} minutes; giving up"
+            return 1
+        fi
+        sleep 5
+    done
+    printf '%s\n' "$BASHPID" > "$lock/pid"
+}
+pages_unlock() { rm -rf "${PAGES_DIR}.lock"; }
+
+# _pages_commit_report PR PATH [TRAILER...]: copy the report into the pages worktree, commit, push.
+_pages_commit_report() {
+    local pr="$1" path="$2"; shift 2
     mkdir -p "$PAGES_DIR/$(dirname "$path")" || return 1
     cp "$ITER_DIR/report.html" "$PAGES_DIR/$path.html" || return 1
     cp "$ITER_DIR/report-meta.json" "$PAGES_DIR/$path.json" || return 1
     python3 "$LOOP_DIR/tools/make_index.py" "$PAGES_DIR" || return 1
     git -C "$PAGES_DIR" add index.html "$path.html" "$path.json" || return 1
     if ! git -C "$PAGES_DIR" diff --cached --quiet; then
-        git -C "$PAGES_DIR" commit -q -m "Report for ${PR_REPO:-$FORK}#$pr" "${trailers[@]}" || return 1
+        git -C "$PAGES_DIR" commit -q -m "Report for ${PR_REPO:-$FORK}#$pr" "$@" || return 1
     fi
     git -C "$PAGES_DIR" push -q origin "$PAGES_BRANCH" || return 1
+}
+
+# A PR must keep its numbered report and description link before becoming ready.
+publish_report() {
+    local pr="$1" path="reports/pr-$1" source rc=0
+    local trailers=()
+    [[ -z "${LOOP_COMMIT_TRAILERS:-}" ]] || trailers=(-m "$LOOP_COMMIT_TRAILERS")
+    [[ "${PR_REPO:-$FORK}" == "$FORK" ]] || path="reports/upstream/pr-$pr"
+    source="https://github.com/$FORK/blob/$PAGES_BRANCH/$path.html"
+    pages_lock || return 1
+    _pages_commit_report "$pr" "$path" "${trailers[@]}" || rc=1
+    pages_unlock
+    (( rc == 0 )) || return 1
     local code="" i
     # Legacy Pages builds of this fork queue for up to 10 minutes and build for 5 to 15 more.
     # Request a new build only when the latest one actually failed: requesting one while a
@@ -325,4 +411,49 @@ publish_report() {
     ghp pr edit "$pr" --body-file "$ITER_DIR/PR_BODY.md" >/dev/null || return 1
     ghp pr comment "$pr" --body "$(printf '## High-level report\n\n%s\n\nSource: %s (index: %s/)\n' \
         "$REPORT_URL" "$source" "$PAGES_URL")" >/dev/null
+}
+
+# Lean watchdog. One runaway proof must not take the machine down (2026-10-27: four `lean`
+# processes at 24 to 41 GB each froze WindowServer). Every WATCHDOG_POLL_SEC seconds, kill a
+# `lean` process above LEAN_MEM_LIMIT_MB of resident memory or older than LEAN_TIME_LIMIT_MIN,
+# and the largest one while all `lean` processes together exceed LEAN_TOTAL_MEM_LIMIT_MB.
+# `lake build` workers are also named `lean` and stay far below the limits.
+lean_watchdog_scan() {  # prints "PID REASON RSS_MB ELAPSED" for every process to kill
+    # Editor language servers (`lean --server`, `lean --worker`) run for hours and are not ours.
+    ps -axo pid=,rss=,etime=,args= | awk -v mem_kb=$(( LEAN_MEM_LIMIT_MB * 1024 )) \
+        -v total_kb=$(( LEAN_TOTAL_MEM_LIMIT_MB * 1024 )) -v max_s=$(( LEAN_TIME_LIMIT_MIN * 60 )) '
+        $4 ~ /(^|\/)lean$/ && $0 !~ / --(server|worker)( |$)/ {
+            n = split($3, t, /[-:]/); s = 0
+            if (n == 4) s = t[1] * 86400 + t[2] * 3600 + t[3] * 60 + t[4]
+            else if (n == 3) s = t[1] * 3600 + t[2] * 60 + t[3]
+            else if (n == 2) s = t[1] * 60 + t[2]
+            if ($2 > mem_kb) { print $1, "memory", int($2 / 1024), $3; next }
+            if (s > max_s) { print $1, "time", int($2 / 1024), $3; next }
+            total += $2
+            if ($2 > big_rss) { big_rss = $2; big = $1 " total " int($2 / 1024) " " $3 }
+        }
+        END { if (total > total_kb && big != "") print big }'
+}
+
+start_lean_watchdog() {
+    (
+        while true; do
+            lean_watchdog_scan | while read -r pid why mb elapsed; do
+                [[ -n "$pid" ]] || continue
+                kill "$pid" 2>/dev/null || continue
+                log "watchdog: killed lean pid $pid ($why limit; rss ${mb} MB, elapsed $elapsed)"
+                printf '%s pid %s %s rss %s MB elapsed %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$pid" "$why" "$mb" "$elapsed" >> "$STATE_DIR/watchdog.log"
+                sleep 5; kill -9 "$pid" 2>/dev/null || true
+            done
+            sleep "$WATCHDOG_POLL_SEC"
+        done
+    ) &
+    WATCHDOG_PID=$!
+    log "lean watchdog started (pid $WATCHDOG_PID): limits ${LEAN_MEM_LIMIT_MB} MB per lean, ${LEAN_TOTAL_MEM_LIMIT_MB} MB in total, ${LEAN_TIME_LIMIT_MIN} min"
+}
+
+stop_lean_watchdog() {
+    [[ -n "${WATCHDOG_PID:-}" ]] || return 0
+    kill "$WATCHDOG_PID" 2>/dev/null || true
+    WATCHDOG_PID=""
 }

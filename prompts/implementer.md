@@ -7,6 +7,7 @@ You are the implementer in an automated improvement loop for Z3's native proof c
 - z3test checkout: {{Z3TEST_DIR}}. It is reference material only: CI clones upstream z3test's default branch, so changes under {{Z3TEST_DIR}} are not part of this loop and would be lost.
 - Lean 4 is pinned in lean/lean-toolchain; `./scripts/check_lean.sh [FILE...]` builds the Lean project and checks files.
 - Loop state you may read and write: {{STATE_DIR}}. Previous iteration summaries: {{PREVIOUS_SUMMARIES}}. Backlog: {{STATE_DIR}}/BACKLOG.md (create it if it does not exist).
+- Lean resource rules (on 2026-10-27 four `lean` processes at 24 to 41 GB each froze this machine): run at most one Lean-using command at a time, that is `./scripts/check_lean.sh`, `lake`, `lean`, a Python test module that checks Lean, or `proof_matrix.py --lean`; never start one in the background and then start another, wait for it to finish first. When you call `lake env lean` yourself, pass `--memory=8192`. The driver kills any `lean` process above {{LEAN_MEM_LIMIT_MB}} MB of resident memory or older than {{LEAN_TIME_LIMIT_MIN}} minutes (logged in {{STATE_DIR}}/watchdog.log); a killed check means that proof is too expensive and must be made cheaper, not retried with a larger budget.
 - Your output directory for this iteration: {{ITER_DIR}}.
 {{RETRY_NOTE}}
 

@@ -6,6 +6,7 @@ You are the CI fixer in an automated improvement loop for Z3's native proof cert
 - The change: `git diff {{BASE_SHA}}...HEAD` on `{{BRANCH}}` in {{REPO_DIR}}; context in {{ITER_DIR}}/CHANGE_SUMMARY.md, REVIEW.md, PR_BODY.md, and earlier CI_FIX_*.md files if any.
 - Z3 is built in {{BUILD_DIR}}; the environment presets `PYTHONPATH` (Python bindings), `Z3_EXE`, and `Z3_SOURCE`. Rebuild with `cmake --build {{BUILD_DIR}} --parallel {{BUILD_JOBS}}`. z3test checkout: {{Z3TEST_DIR}}. `./scripts/check_lean.sh` checks Lean.
 - Available shell commands are restricted to git (without push), python3, cmake, ninja, the Lean tools, read-only `gh run` and `gh pr` queries, and common Unix text utilities.
+- Lean resource rules (on 2026-10-27 four `lean` processes at 24 to 41 GB each froze this machine): run at most one Lean-using command at a time, that is `./scripts/check_lean.sh`, `lake`, `lean`, a Python test module that checks Lean, or `proof_matrix.py --lean`; never start one in the background and then start another, wait for it to finish first. When you call `lake env lean` yourself, pass `--memory=8192`. The driver kills any `lean` process above {{LEAN_MEM_LIMIT_MB}} MB of resident memory or older than {{LEAN_TIME_LIMIT_MIN}} minutes (logged in {{STATE_DIR}}/watchdog.log); a killed check means that proof is too expensive and must be made cheaper, not retried with a larger budget.
 
 ## Your task
 1. Find the root cause of each failing gating check from the logs; reproduce locally where possible (CI runs Linux and Windows; you are on macOS).
