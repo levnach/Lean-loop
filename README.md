@@ -80,6 +80,9 @@ Results: `state/HISTORY.md`, `state/BACKLOG.md`, `state/iter-NNN/*`.
 - The clone's `upstream` remote has pushing disabled; nothing in the loop can
   write to `Z3Prover/z3`.
 - The agents never see `--dangerously-skip-permissions`.
+- `tools/watchdog.py` kills orphaned, oversized, or overdue `lean` and loop-built
+  `z3` processes (limits in `config.env`, kills in `state/watchdog.log`); it
+  outlives `loop.sh` until no loop script or watched process remains.
 
 ## Layout
 
@@ -88,7 +91,8 @@ Results: `state/HISTORY.md`, `state/BACKLOG.md`, `state/iter-NNN/*`.
     lib.sh       helpers (agents, rebase, build, CI wait, pages)
     prompts/     one prompt per role: implementer, reviewer, integrator,
                  ci_fixer, reporter, rebaser
-    tools/       prompt rendering, CI status, report rendering/linking, site index
+    tools/       prompt rendering, CI status, report rendering/linking, site index,
+                 process watchdog
     tests/       report rendering and draft-publication flow regressions
     repo/        clone of the fork (origin) with upstream push-disabled
     z3test/      shallow clone of Z3Prover/z3test

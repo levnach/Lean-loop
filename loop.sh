@@ -20,7 +20,7 @@ STATE_DIR="$LOOP_DIR/state"
 BUILD_DIR="$REPO_DIR/build"
 AGENT_ALLOWED_TOOLS+=",Bash($BUILD_DIR/z3:*),Bash($BUILD_DIR/test-z3:*),Bash($REPO_DIR/scripts/check_lean.sh:*)"
 export LOOP_DIR REPO_DIR Z3TEST_DIR PAGES_DIR STATE_DIR BUILD_DIR BUILD_JOBS FORK UPSTREAM BASE_BRANCH MAX_CI_FIX_ATTEMPTS \
-       LEAN_MEM_LIMIT_MB LEAN_TOTAL_MEM_LIMIT_MB LEAN_TIME_LIMIT_MIN
+       LEAN_MEM_LIMIT_MB LEAN_TIME_LIMIT_MIN Z3_MEM_LIMIT_MB Z3_TIME_LIMIT_MIN
 mkdir -p "$STATE_DIR" "$LOOP_DIR/logs"
 
 ITERATIONS=1
@@ -231,8 +231,7 @@ run_iteration() {
 
 main() {
     preflight
-    start_lean_watchdog
-    trap stop_lean_watchdog EXIT
+    start_watchdog
     ITER_DIR="$STATE_DIR/setup"; mkdir -p "$ITER_DIR"; ITER_LOG="$ITER_DIR/setup.log"
     ensure_pages
     [[ -f "$STATE_DIR/HISTORY.md" ]] || printf '# Loop history\n\n| iteration | finished | PR | merge | CI | report |\n| --- | --- | --- | --- | --- | --- |\n' > "$STATE_DIR/HISTORY.md"

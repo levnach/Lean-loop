@@ -28,6 +28,7 @@ ITER_ID=$(printf 'iter-%03d' "$ITER")
 ITER_DIR="$STATE_DIR/$ITER_ID"
 ITER_LOG="$ITER_DIR/iteration.log"
 [[ -d "$ITER_DIR" ]] || die "no iteration directory $ITER_DIR"
+start_watchdog
 
 PR_URL=$(ghf pr view "$PR_NUMBER" --json url -q .url)
 PR_TITLE=$(ghf pr view "$PR_NUMBER" --json title -q .title)

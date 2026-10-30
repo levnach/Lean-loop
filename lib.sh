@@ -413,47 +413,14 @@ publish_report() {
         "$REPORT_URL" "$source" "$PAGES_URL")" >/dev/null
 }
 
-# Lean watchdog. One runaway proof must not take the machine down (2026-10-27: four `lean`
-# processes at 24 to 41 GB each froze WindowServer). Every WATCHDOG_POLL_SEC seconds, kill a
-# `lean` process above LEAN_MEM_LIMIT_MB of resident memory or older than LEAN_TIME_LIMIT_MIN,
-# and the largest one while all `lean` processes together exceed LEAN_TOTAL_MEM_LIMIT_MB.
-# `lake build` workers are also named `lean` and stay far below the limits.
-lean_watchdog_scan() {  # prints "PID REASON RSS_MB ELAPSED" for every process to kill
-    # Editor language servers (`lean --server`, `lean --worker`) run for hours and are not ours.
-    ps -axo pid=,rss=,etime=,args= | awk -v mem_kb=$(( LEAN_MEM_LIMIT_MB * 1024 )) \
-        -v total_kb=$(( LEAN_TOTAL_MEM_LIMIT_MB * 1024 )) -v max_s=$(( LEAN_TIME_LIMIT_MIN * 60 )) '
-        $4 ~ /(^|\/)lean$/ && $0 !~ / --(server|worker)( |$)/ {
-            n = split($3, t, /[-:]/); s = 0
-            if (n == 4) s = t[1] * 86400 + t[2] * 3600 + t[3] * 60 + t[4]
-            else if (n == 3) s = t[1] * 3600 + t[2] * 60 + t[3]
-            else if (n == 2) s = t[1] * 60 + t[2]
-            if ($2 > mem_kb) { print $1, "memory", int($2 / 1024), $3; next }
-            if (s > max_s) { print $1, "time", int($2 / 1024), $3; next }
-            total += $2
-            if ($2 > big_rss) { big_rss = $2; big = $1 " total " int($2 / 1024) " " $3 }
-        }
-        END { if (total > total_kb && big != "") print big }'
-}
-
-start_lean_watchdog() {
-    (
-        while true; do
-            lean_watchdog_scan | while read -r pid why mb elapsed; do
-                [[ -n "$pid" ]] || continue
-                kill "$pid" 2>/dev/null || continue
-                log "watchdog: killed lean pid $pid ($why limit; rss ${mb} MB, elapsed $elapsed)"
-                printf '%s pid %s %s rss %s MB elapsed %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$pid" "$why" "$mb" "$elapsed" >> "$STATE_DIR/watchdog.log"
-                sleep 5; kill -9 "$pid" 2>/dev/null || true
-            done
-            sleep "$WATCHDOG_POLL_SEC"
-        done
-    ) &
-    WATCHDOG_PID=$!
-    log "lean watchdog started (pid $WATCHDOG_PID): limits ${LEAN_MEM_LIMIT_MB} MB per lean, ${LEAN_TOTAL_MEM_LIMIT_MB} MB in total, ${LEAN_TIME_LIMIT_MIN} min"
-}
-
-stop_lean_watchdog() {
-    [[ -n "${WATCHDOG_PID:-}" ]] || return 0
-    kill "$WATCHDOG_PID" 2>/dev/null || true
-    WATCHDOG_PID=""
+# Process watchdog (tools/watchdog.py): kills orphaned, oversized, or overdue `lean` processes and
+# loop-built binaries (z3, test-z3). It runs detached, one instance per LOOP_DIR, and exits by itself
+# once no loop script and no watched process remain, so it also covers what outlives loop.sh
+# (2026-10-30: orphaned z3 processes from an agent's sweep panicked the machine after the loop stopped).
+start_watchdog() {
+    nohup python3 "$LOOP_DIR/tools/watchdog.py" --loop-dir "$LOOP_DIR" --state-dir "$STATE_DIR" \
+        --lean-mem-mb "$LEAN_MEM_LIMIT_MB" --lean-time-min "$LEAN_TIME_LIMIT_MIN" \
+        --bin-mem-mb "$Z3_MEM_LIMIT_MB" --bin-time-min "$Z3_TIME_LIMIT_MIN" \
+        --total-mem-mb "$WATCHDOG_TOTAL_MEM_LIMIT_MB" --poll-sec "$WATCHDOG_POLL_SEC" \
+        > /dev/null 2>> "$STATE_DIR/watchdog.err" &
 }
