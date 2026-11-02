@@ -30,6 +30,10 @@ for m in metas:
         f'<td><a href="{html.escape(str(m.get("pr_url", "")))}">PR</a></td>'
         "</tr>"
     )
+overview = ""
+if os.path.exists(os.path.join(pages, "reports", "lean-overview.html")):
+    overview = '<p>Project overview: <a href="reports/lean-overview.html">Certifying Z3 unsat results with Lean</a></p>'
+
 if not rows:
     rows.append('<tr><td colspan="6">No reports yet.</td></tr>')
 
@@ -51,6 +55,7 @@ a {{ color: var(--link); text-decoration: none; }} a:hover {{ text-decoration: u
 </style></head><body><main>
 <h1>Z3 &rarr; Lean certificate improvement loop</h1>
 <p class="lead">High-level reports for open and merged pull requests from the automated implement / review / integrate loop.</p>
+{overview}
 <table><thead><tr><th>PR</th><th>Title</th><th>Date</th><th>Status</th><th>Summary</th><th></th></tr></thead>
 <tbody>{''.join(rows)}</tbody></table>
 </main></body></html>
