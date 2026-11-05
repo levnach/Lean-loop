@@ -78,7 +78,11 @@ sync_fork_master() {
     fi
     local after; after=$(repo_git rev-parse HEAD)
     if [[ "$after" != "$before" ]]; then
-        repo_git push -q --force-with-lease origin "$BASE_BRANCH" || die "pushing rebased $BASE_BRANCH to the fork failed"
+        if (( ${NO_PR:-0} )); then
+            log "rebase moved $BASE_BRANCH; not pushing (--no-pr)"
+        else
+            repo_git push -q --force-with-lease origin "$BASE_BRANCH" || die "pushing rebased $BASE_BRANCH to the fork failed"
+        fi
     fi
     log "fork $BASE_BRANCH = $(repo_git rev-parse --short HEAD): upstream $(repo_git rev-parse --short "upstream/$BASE_BRANCH") + $(repo_git rev-list --count "upstream/$BASE_BRANCH..HEAD") loop commit(s)"
 }

@@ -1,0 +1,14 @@
+{
+  "name": "lean-loop-junco",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.4.2",
+  "dependencies": {
+    "junco": "link:../../junco",
+    "@earendil-works/pi-ai": "link:../../junco/node_modules/@earendil-works/pi-ai",
+    "@earendil-works/pi-coding-agent": "link:../../junco/node_modules/@earendil-works/pi-coding-agent",
+    "dataflow-engine-opik": "link:../../junco/packages/dataflow-engine-opik",
+    "opik": "link:../../junco/node_modules/opik",
+    "typebox": "link:../../junco/node_modules/typebox"
+  }
+}

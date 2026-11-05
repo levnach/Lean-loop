@@ -44,10 +44,34 @@ verification in the fork `levnach/z3`, one pull request per iteration.
     ./loop.sh -n 2            # two iterations (two PRs)
     ./loop.sh --start 5 -n 1  # explicit iteration number
     ./loop.sh --skip-build    # reuse the existing build
+    ./loop.sh --no-pr         # dry run: rebase (no push), build, implementer, reviewer,
+                              # integrator; stop with the branch and PR text in state/iter-NNN
 
 Logs: `logs/loop.log` (everything), `state/iter-NNN/iteration.log`
 (per iteration), `state/iter-NNN/<role>.stream.log` (agent transcripts).
 Results: `state/HISTORY.md`, `state/BACKLOG.md`, `state/iter-NNN/*`.
+
+## Junco variant
+
+`junco/` holds the same loop as a Junco workflow (`lean-loop.yml` topology, `lean-loop.ts`
+runner and exported driver nodes): TestGenerator → Implementer → push + PR → Reviewer
+(review posted on the PR), forever, one branch `loop/junco-N` per round.
+Each round is one graph, `$source ~> TestGenerator -> PrepareImplementer -> Implementer -> OpenPR -> Reviewer -> PostReview -> $sink`, built from fresh agents by `JuncoGraph.fromYaml` and closed when the review reaches `$sink`; the runner then builds the next one. Code nodes return the next role's assignment, and each agent's `prompt` is that value (`{{edge}}`). Models live in the TypeScript ladder, not YAML: all three agents use `github-copilot/claude-opus-5.5` with `high` thinking.
+It works on its own clone inside a btrfs seed (`junco/seed/repo`), not on `repo/`. Setup once:
+
+    cd junco && bun install
+    btrfs subvolume create seed && git clone <z3 clone> seed/repo
+    git -C seed/repo remote set-url origin https://github.com/<fork>.git
+    git -C seed/repo remote add upstream https://github.com/Z3Prover/z3.git
+    git -C seed/repo remote set-url --push upstream DISABLED
+    systemd-run --user --scope -p Delegate=yes -- bun run lean-loop.ts [--rounds N] [--no-pr] [--skip-build]
+
+The `systemd-run` scope matters: junco's agent shell (marsh) needs a delegated cgroup v2 subtree, and without one every external command the agents run fails closed with `cgroup resource control unavailable`.
+
+Needs the adjacent `../junco` checkout (with its native addon), a saved GitHub Copilot Pi login, and the junco telemetry stack: Grafana at `GRAFANA_URL` (default `http://localhost:8000`, dashboard `Z3-lean-checker`) and Opik at `OPIK_URL_OVERRIDE` (default `http://localhost:5173/api`, project `Z3-lean-checker`, one trace per round).
+State: `junco/seed/state/HISTORY.md`, `junco/seed/state/iter-NNN/`.
+
+Offline driver checks: `cd junco && bun test code.test.ts` (two rounds of the three code nodes on a temporary local Git repository; no model calls or pull requests). Importing `lean-loop.ts` parses and validates its YAML without reading `config.env` or starting the loop.
 
 ## Safety
 

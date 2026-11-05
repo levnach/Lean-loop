@@ -1,10 +1,17 @@
 # Local checkouts, report worktrees, and loop runtime state.
-/repo/
+/repo
 /z3test/
 /pages/
 /state/
 /logs/
 /work/
+/junco/seed/
+/junco/node_modules/
+/junco/bun.lock
+/junco/.marsh/
+/junco/complaints.jsonl
+/.junco/
+/graft/.cache/
 
 # Local agent settings and credentials.
 /.claude/

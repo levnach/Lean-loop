@@ -1,0 +1,4 @@
+# Bun resolves link: targets relative to globalDir/node_modules, not this manifest.
+# Point that base at the checkout so the ../../junco-agency links resolve.
+[install]
+globalDir = ".."

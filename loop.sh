@@ -26,15 +26,17 @@ ITERATIONS=1
 START=""
 SKIP_BUILD=0
 RESUME=0
+NO_PR=0
 while (( $# )); do
     case "$1" in
         -n|--iterations) ITERATIONS="$2"; shift 2 ;;
         --start) START="$2"; shift 2 ;;
         --skip-build) SKIP_BUILD=1; shift ;;
         --resume) RESUME=1; shift ;;   # first iteration: branch and PR text already exist; start at the push
+        --no-pr) NO_PR=1; shift ;;     # stop after the integrator: nothing is pushed, no PR, no pages
         -h|--help)
             sed -n '2,8p' "$0"; echo
-            echo "usage: $0 [-n ITERATIONS] [--start K] [--skip-build] [--resume]"; exit 0 ;;
+            echo "usage: $0 [-n ITERATIONS] [--start K] [--skip-build] [--resume] [--no-pr]"; exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
@@ -48,6 +50,7 @@ preflight() {
     [[ -d "$REPO_DIR/.git" ]] || die "clone the fork into $REPO_DIR first"
     [[ "$(repo_git remote get-url --push upstream)" == "DISABLED" ]] || die "upstream remote must have pushing disabled"
     [[ -d "$Z3TEST_DIR/.git" ]] || die "clone z3test into $Z3TEST_DIR first"
+    (( NO_PR )) && return 0
     local login; login=$(gh api user -q .login)
     [[ "$FORK" == "$login/"* ]] || die "gh is logged in as $login, but the fork is $FORK"
 }
@@ -125,6 +128,11 @@ run_iteration() {
     [[ -s "$ITER_DIR/PR_TITLE.txt" && -s "$ITER_DIR/PR_BODY.md" ]] || { fail_iteration "integrator wrote no PR title/body"; return 1; }
     fi  # resume
     PR_TITLE=$(head -n 1 "$ITER_DIR/PR_TITLE.txt")
+    if (( NO_PR )); then
+        printf '| %s | %s | (no PR: --no-pr) %s | %s | | |\n' "$ITER" "$(date '+%Y-%m-%d %H:%M')" "$PR_TITLE" "$(repo_git rev-parse --short HEAD)" >> "$STATE_DIR/HISTORY.md"
+        log "=== iteration $ITER done (--no-pr): branch $BRANCH at $(repo_git rev-parse --short HEAD), PR text in $ITER_DIR ==="
+        return 0
+    fi
 
     # 4. Pull request on the fork (driver only). Note: `set -e` is off inside this function
     # (it is called with `||`), so every remote step checks its own result.
@@ -213,7 +221,7 @@ run_iteration() {
 main() {
     preflight
     ITER_DIR="$STATE_DIR/setup"; mkdir -p "$ITER_DIR"; ITER_LOG="$ITER_DIR/setup.log"
-    ensure_pages
+    (( NO_PR )) || ensure_pages
     [[ -f "$STATE_DIR/HISTORY.md" ]] || printf '# Loop history\n\n| iteration | finished | PR | merge | CI | report |\n| --- | --- | --- | --- | --- | --- |\n' > "$STATE_DIR/HISTORY.md"
     if [[ -z "$START" ]]; then
         local last
